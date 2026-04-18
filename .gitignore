@@ -1,0 +1,23 @@
+# Compiled binaries
+/pvesnap
+/pvesnap.exe
+/dist/
+
+# Go build / test output
+*.test
+*.out
+coverage.*
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+
+# Local state & secrets — never commit operator-specific files
+state.yaml
+local.yaml
+*.local.yaml

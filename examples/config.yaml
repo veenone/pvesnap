@@ -1,0 +1,23 @@
+nodes:
+  - name: pve1
+    endpoint: https://10.0.0.11:8006
+    api_token: "root@pam!pvesnap=00000000-0000-0000-0000-000000000000"
+    verify_tls: false
+  - name: pve2
+    endpoint: https://10.0.0.12:8006
+    api_token: "root@pam!pvesnap=00000000-0000-0000-0000-000000000000"
+    verify_tls: false
+
+sets:
+  - name: e2e-core
+    description: "Core E2E stack — api, db, broker, worker"
+    guests:
+      - { node: pve1, vmid: 101, type: lxc,  role: api }
+      - { node: pve1, vmid: 102, type: lxc,  role: db }
+      - { node: pve2, vmid: 201, type: qemu, role: broker }
+      - { node: pve2, vmid: 202, type: lxc,  role: worker }
+
+defaults:
+  parallelism_per_node: 2
+  task_poll_interval: 2s
+  task_timeout: 30m
