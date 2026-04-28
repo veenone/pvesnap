@@ -19,5 +19,9 @@ coverage.*
 
 # Local state & secrets — never commit operator-specific files
 state.yaml
+config.yaml
 local.yaml
 *.local.yaml
+
+# Claude Code
+.claude/
