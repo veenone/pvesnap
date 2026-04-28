@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -157,12 +158,13 @@ func runSnapshotList(st *state.Store, out io.Writer, args []string) int {
 func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store, statePath string, out io.Writer, args []string) int {
 	fs := flag.NewFlagSet("snapshot restore", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip confirmation")
+	vmidFlag := fs.String("vmid", "", "comma-separated VMIDs to restore (default: all guests in set)")
 	if err := fs.Parse(args); err != nil {
 		return 3
 	}
 	pos := fs.Args()
 	if len(pos) != 2 {
-		fmt.Fprintln(out, "usage: pvesnap snapshot restore <set> <name>")
+		fmt.Fprintln(out, "usage: pvesnap snapshot restore <set> <name> [-vmid 100,101]")
 		return 3
 	}
 	setName, name := pos[0], pos[1]
@@ -171,8 +173,27 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 		fmt.Fprintf(out, "no recorded snapshot %s/%s — check 'pvesnap snapshot list'\n", setName, name)
 		return 3
 	}
+	vmidFilter, err := parseVMIDFilter(*vmidFlag)
+	if err != nil {
+		fmt.Fprintln(out, err)
+		return 3
+	}
+
+	// Only attempt rollback on guests that have status=ok in state.
+	var targets []state.GuestRecord
+	for _, g := range snap.Guests {
+		if g.Status == state.StatusOK {
+			targets = append(targets, g)
+		}
+	}
+	targets = filterByVMID(targets, vmidFilter)
+	if len(targets) == 0 {
+		fmt.Fprintln(out, "no healthy guests to roll back in this snapshot")
+		return 2
+	}
+
 	if !*yes {
-		fmt.Fprintf(out, "About to ROLLBACK %d guests in set %q to snapshot %q.\nThis is destructive. Continue? [y/N] ", len(snap.Guests), setName, name)
+		fmt.Fprintf(out, "About to ROLLBACK %d guests in set %q to snapshot %q.\nThis is destructive. Continue? [y/N] ", len(targets), setName, name)
 		r := bufio.NewReader(os.Stdin)
 		line, _ := r.ReadString('\n')
 		if strings.ToLower(strings.TrimSpace(line)) != "y" {
@@ -184,18 +205,6 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 	orch := orchestrator.New(client, cfg)
 	opCtx, cancel := orch.OpContext(ctx)
 	defer cancel()
-
-	// Only attempt rollback on guests that have status=ok in state.
-	var targets []state.GuestRecord
-	for _, g := range snap.Guests {
-		if g.Status == state.StatusOK {
-			targets = append(targets, g)
-		}
-	}
-	if len(targets) == 0 {
-		fmt.Fprintln(out, "no healthy guests to roll back in this snapshot")
-		return 2
-	}
 
 	fmt.Fprintf(out, "rolling back %d guests to %q...\n", len(targets), name)
 	results := orch.Restore(opCtx, targets)
@@ -227,12 +236,13 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store, statePath string, out io.Writer, args []string) int {
 	fs := flag.NewFlagSet("snapshot delete", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip confirmation")
+	vmidFlag := fs.String("vmid", "", "comma-separated VMIDs to delete (default: all guests in set)")
 	if err := fs.Parse(args); err != nil {
 		return 3
 	}
 	pos := fs.Args()
 	if len(pos) != 2 {
-		fmt.Fprintln(out, "usage: pvesnap snapshot delete <set> <name>")
+		fmt.Fprintln(out, "usage: pvesnap snapshot delete <set> <name> [-vmid 100,101]")
 		return 3
 	}
 	setName, name := pos[0], pos[1]
@@ -241,8 +251,23 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 		fmt.Fprintf(out, "no recorded snapshot %s/%s\n", setName, name)
 		return 3
 	}
+	vmidFilter, err := parseVMIDFilter(*vmidFlag)
+	if err != nil {
+		fmt.Fprintln(out, err)
+		return 3
+	}
+
+	// Delete only where the snapshot was recorded as present.
+	var targets []state.GuestRecord
+	for _, g := range snap.Guests {
+		if g.Status == state.StatusOK {
+			targets = append(targets, g)
+		}
+	}
+	targets = filterByVMID(targets, vmidFilter)
+
 	if !*yes {
-		fmt.Fprintf(out, "Delete snapshot %q from %d guests in set %q? [y/N] ", name, len(snap.Guests), setName)
+		fmt.Fprintf(out, "Delete snapshot %q from %d guests in set %q? [y/N] ", name, len(targets), setName)
 		r := bufio.NewReader(os.Stdin)
 		line, _ := r.ReadString('\n')
 		if strings.ToLower(strings.TrimSpace(line)) != "y" {
@@ -255,13 +280,6 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 	opCtx, cancel := orch.OpContext(ctx)
 	defer cancel()
 
-	// Delete only where the snapshot was recorded as present.
-	var targets []state.GuestRecord
-	for _, g := range snap.Guests {
-		if g.Status == state.StatusOK {
-			targets = append(targets, g)
-		}
-	}
 	results := orch.Delete(opCtx, targets)
 
 	okCount, failCount := 0, 0
@@ -278,7 +296,7 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 	}
 	_ = tw.Flush()
 
-	if failCount == 0 {
+	if failCount == 0 && vmidFilter == nil {
 		st.Remove(setName, name)
 	}
 	if err := st.Save(statePath); err != nil {
@@ -294,6 +312,45 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 	default:
 		return 1
 	}
+}
+
+// parseVMIDFilter parses a comma-separated list of VMIDs into a lookup map.
+// Returns nil map if the input is empty (no filtering).
+func parseVMIDFilter(raw string) (map[int]bool, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	m := make(map[int]bool)
+	for _, s := range strings.Split(raw, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		id, err := strconv.Atoi(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid VMID %q: %w", s, err)
+		}
+		m[id] = true
+	}
+	if len(m) == 0 {
+		return nil, nil
+	}
+	return m, nil
+}
+
+// filterByVMID returns only guests whose VMID is in the filter map.
+// If filter is nil, all guests are returned unchanged.
+func filterByVMID(guests []state.GuestRecord, filter map[int]bool) []state.GuestRecord {
+	if filter == nil {
+		return guests
+	}
+	var out []state.GuestRecord
+	for _, g := range guests {
+		if filter[g.VMID] {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 func errString(e error) string {

@@ -1,0 +1,91 @@
+nodes:
+  - name: I2J6-PROXMOX-1
+    endpoint: https://10.88.1.2:8006
+    api_token: "root@pam!pvesnap=d340a644-30ad-4f4e-aac4-c7e3acdb16a7"
+    verify_tls: false
+  - name: I2J6-PROXMOX-2
+    endpoint: https://10.88.1.3:8006
+    api_token: "root@pam!pvesnap=d340a644-30ad-4f4e-aac4-c7e3acdb16a7"
+    verify_tls: false
+  - name: I2J6-PROXMOX-3
+    endpoint: https://10.88.1.4:8006
+    api_token: "root@pam!pvesnap=d340a644-30ad-4f4e-aac4-c7e3acdb16a7"
+    verify_tls: false
+
+sets:
+  # === Set gabungan: snapshot/restore semua sekaligus ===
+  - name: all
+    description: "All guests on node 2 and node 3"
+    guests:
+      - { node: I2J6-PROXMOX-2, vmid: 103, type: qemu, role: server-2016 }
+      - { node: I2J6-PROXMOX-2, vmid: 104, type: qemu, role: server-2019 }
+      - { node: I2J6-PROXMOX-2, vmid: 109, type: qemu, role: win-11 }
+      - { node: I2J6-PROXMOX-2, vmid: 121, type: qemu, role: server-2022 }
+      - { node: I2J6-PROXMOX-3, vmid: 112, type: lxc,  role: client-ubuntu1 }
+      - { node: I2J6-PROXMOX-3, vmid: 113, type: lxc,  role: client-debian1 }
+      - { node: I2J6-PROXMOX-3, vmid: 114, type: lxc,  role: client-rocky1 }
+      - { node: I2J6-PROXMOX-3, vmid: 115, type: qemu, role: client-win11 }
+      - { node: I2J6-PROXMOX-3, vmid: 117, type: lxc,  role: client-rocky2 }
+      - { node: I2J6-PROXMOX-3, vmid: 119, type: lxc,  role: client-ubuntu2 }
+      - { node: I2J6-PROXMOX-3, vmid: 120, type: lxc,  role: client-debian2 }
+
+  # === Set per-VM: snapshot/restore satu-satu ===
+  - name: server-2016
+    description: "Windows Server 2016"
+    guests:
+      - { node: I2J6-PROXMOX-2, vmid: 103, type: qemu }
+
+  - name: server-2019
+    description: "Windows Server 2019"
+    guests:
+      - { node: I2J6-PROXMOX-2, vmid: 104, type: qemu }
+
+  - name: win-11
+    description: "Windows 11"
+    guests:
+      - { node: I2J6-PROXMOX-2, vmid: 109, type: qemu }
+
+  - name: server-2022
+    description: "Windows Server 2022"
+    guests:
+      - { node: I2J6-PROXMOX-2, vmid: 121, type: qemu }
+
+  - name: client-ubuntu1
+    description: "Ubuntu client 1"
+    guests:
+      - { node: I2J6-PROXMOX-3, vmid: 112, type: lxc }
+
+  - name: client-debian1
+    description: "Debian client 1"
+    guests:
+      - { node: I2J6-PROXMOX-3, vmid: 113, type: lxc }
+
+  - name: client-rocky1
+    description: "Rocky Linux client 1"
+    guests:
+      - { node: I2J6-PROXMOX-3, vmid: 114, type: lxc }
+
+  - name: client-win11
+    description: "Windows 11 client"
+    guests:
+      - { node: I2J6-PROXMOX-3, vmid: 115, type: qemu }
+
+  - name: client-rocky2
+    description: "Rocky Linux client 2"
+    guests:
+      - { node: I2J6-PROXMOX-3, vmid: 117, type: lxc }
+
+  - name: client-ubuntu2
+    description: "Ubuntu client 2"
+    guests:
+      - { node: I2J6-PROXMOX-3, vmid: 119, type: lxc }
+
+  - name: client-debian2
+    description: "Debian client 2"
+    guests:
+      - { node: I2J6-PROXMOX-3, vmid: 120, type: lxc }
+
+defaults:
+  parallelism_per_node: 2
+  task_poll_interval: 2s
+  task_timeout: 30m

@@ -105,9 +105,32 @@ done: 4 ok, 0 failed
 
 Only guests whose state status is `ok` are attempted — guests that failed at create time are skipped.
 
+### Selective restore with `--vmid`
+
+Use `--vmid` to restore only specific guests instead of the entire set:
+
+```
+# Restore a single guest
+$ pvesnap snapshot restore e2e-core v1-5-rc1 --yes --vmid 101
+rolling back 1 guests to "v1-5-rc1"...
+NODE  TYPE  VMID  STATUS  DETAIL
+pve1  lxc   101   ok
+done: 1 ok, 0 failed
+
+# Restore multiple specific guests
+$ pvesnap snapshot restore e2e-core v1-5-rc1 --yes --vmid 101,201
+rolling back 2 guests to "v1-5-rc1"...
+NODE  TYPE  VMID  STATUS  DETAIL
+pve1  lxc   101   ok
+pve2  qemu  201   ok
+done: 2 ok, 0 failed
+```
+
 ## `pvesnap snapshot delete <set> <name>`
 
 Removes the snapshot from every guest. Like create, it continues even if individual guests fail, so you can see exactly what still exists. State entry is removed only on full success; on partial failure the entry remains so you can investigate.
+
+When `--vmid` is used, the state entry is **not** removed even on success, since the snapshot still exists on other guests.
 
 ```
 $ pvesnap snapshot delete e2e-core v1-4 --yes
@@ -124,6 +147,7 @@ done: 4 ok, 0 failed
 | Flag | Purpose |
 |---|---|
 | `--yes` | Skip the interactive confirmation prompt. |
+| `--vmid <id,...>` | Comma-separated list of VMIDs to target. When omitted, all guests in the set are affected. |
 
 ## Exit codes
 
