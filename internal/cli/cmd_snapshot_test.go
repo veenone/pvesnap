@@ -126,3 +126,128 @@ func TestRunSnapshotRestoreLiveSourced(t *testing.T) {
 		t.Errorf("unexpected output:\n%s", out.String())
 	}
 }
+
+func TestRunSnapshotRestoreEmptyTarget(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"name":"current"}]}`)) // v1 absent
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes:    []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets:     []config.Set{{Name: "s", Guests: []config.Guest{{Node: "pve1", VMID: 101, Type: config.LXC}}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute},
+	}
+	var out bytes.Buffer
+	code := runSnapshotRestore(context.Background(), cfg, &state.Store{}, "x", &out, []string{"--yes", "s", "v1"})
+	if code != 2 {
+		t.Fatalf("want exit 2, got %d; out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "not found on any guest") {
+		t.Errorf("missing message: %s", out.String())
+	}
+}
+
+func TestRunSnapshotRestorePartialCoverage(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/lxc/101/snapshot"):
+			_, _ = w.Write([]byte(`{"data":[{"name":"current"},{"name":"v1"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/lxc/102/snapshot"):
+			_, _ = w.Write([]byte(`{"data":[{"name":"current"}]}`)) // lacks v1
+		case strings.HasSuffix(r.URL.Path, "/snapshot/v1/rollback"):
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzrollback:101:u:"}`))
+		case strings.Contains(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes: []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets: []config.Set{{Name: "s", Guests: []config.Guest{
+			{Node: "pve1", VMID: 101, Type: config.LXC},
+			{Node: "pve1", VMID: 102, Type: config.LXC},
+		}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute},
+	}
+	var out bytes.Buffer
+	code := runSnapshotRestore(context.Background(), cfg, &state.Store{}, "x", &out, []string{"--yes", "s", "v1"})
+	if code != 0 {
+		t.Fatalf("want exit 0 (1 of 2 restored), got %d; out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "rolling back 1 guests") {
+		t.Errorf("expected 1 target: %s", out.String())
+	}
+}
+
+func TestRunSnapshotRestoreQueryError(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError) // discovery fails
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes:    []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets:     []config.Set{{Name: "s", Guests: []config.Guest{{Node: "pve1", VMID: 101, Type: config.LXC}}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute},
+	}
+	var out bytes.Buffer
+	code := runSnapshotRestore(context.Background(), cfg, &state.Store{}, "x", &out, []string{"--yes", "s", "v1"})
+	if code != 2 {
+		t.Fatalf("want exit 2 (no targets), got %d; out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "could not query") {
+		t.Errorf("expected query warning: %s", out.String())
+	}
+}
+
+func TestRunSnapshotRestoreDriftNote(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"name":"current"}]}`)) // v1 absent live
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes:    []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets:     []config.Set{{Name: "s", Guests: []config.Guest{{Node: "pve1", VMID: 101, Type: config.LXC}}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute},
+	}
+	st := &state.Store{Snapshots: []state.Snapshot{{Set: "s", Name: "v1", Guests: []state.GuestRecord{
+		{Node: "pve1", VMID: 101, Type: config.LXC, Snapname: "v1", Status: state.StatusOK},
+	}}}}
+	var out bytes.Buffer
+	code := runSnapshotRestore(context.Background(), cfg, st, "x", &out, []string{"--yes", "s", "v1"})
+	if code != 2 {
+		t.Fatalf("want exit 2 (absent live), got %d; out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "drift") {
+		t.Errorf("expected drift note: %s", out.String())
+	}
+}
+
+func TestRunSnapshotListLive(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/lxc/101/snapshot"):
+			_, _ = w.Write([]byte(`{"data":[{"name":"current"},{"name":"v1","snaptime":100}]}`))
+		default:
+			http.Error(w, "boom", http.StatusInternalServerError) // 102 errors -> exit 1
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes: []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets: []config.Set{{Name: "s", Guests: []config.Guest{
+			{Node: "pve1", VMID: 101, Type: config.LXC},
+			{Node: "pve1", VMID: 102, Type: config.LXC},
+		}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute},
+	}
+	var out bytes.Buffer
+	code := runSnapshotListLive(context.Background(), cfg, &out, "s")
+	if code != 1 {
+		t.Fatalf("want exit 1 (one guest errored), got %d; out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "v1") || !strings.Contains(out.String(), "partial") {
+		t.Errorf("expected v1 partial row: %s", out.String())
+	}
+}
