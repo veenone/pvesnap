@@ -235,6 +235,8 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 
 	client := proxmox.NewClient(cfg)
 	orch := orchestrator.New(client, cfg)
+	// opCtx covers both discovery and the rollback itself; the timeout clock
+	// runs during the interactive prompt when --yes is not set (deliberate).
 	opCtx, cancel := orch.OpContext(ctx)
 	defer cancel()
 
@@ -254,6 +256,9 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 			have[t.VMID] = true
 		}
 		for _, g := range recorded.Guests {
+			if vmidFilter != nil && !vmidFilter[g.VMID] {
+				continue // deliberately excluded by -vmid, not drift
+			}
 			if g.Status == state.StatusOK && !have[g.VMID] {
 				fmt.Fprintf(out, "note: state records %d as having %q but it is not on the guest (drift)\n", g.VMID, snapname)
 			}
