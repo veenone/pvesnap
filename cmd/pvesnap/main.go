@@ -26,7 +26,7 @@ Commands:
   discover                              list guests known to each configured node
   set list                              list sets defined in config
   snapshot create <set> <name>          create a named snapshot across a set
-  snapshot list [<set>]                 list recorded snapshots
+  snapshot list [<set>] [--live]        list recorded snapshots (--live: query guest storage)
   snapshot restore <set> <name>         roll back a set to a recorded snapshot
   snapshot delete <set> <name>          delete a recorded snapshot
 
