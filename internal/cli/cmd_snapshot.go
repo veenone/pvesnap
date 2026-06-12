@@ -359,3 +359,37 @@ func errString(e error) string {
 	}
 	return e.Error()
 }
+
+// selectSnapshotTargets picks guests whose live inventory contains a snapshot
+// named `name`. Guests excluded by `filter` (when non-nil) are ignored entirely.
+// It returns restore targets and the inventory entries that lack the snapshot
+// (either absent or a failed query, distinguishable via their Err field).
+func selectSnapshotTargets(inv []orchestrator.SnapshotInventory, name string, filter map[int]bool) (targets []state.GuestRecord, missing []orchestrator.SnapshotInventory) {
+	for _, item := range inv {
+		if filter != nil && !filter[item.Guest.VMID] {
+			continue
+		}
+		if item.Err != nil {
+			missing = append(missing, item)
+			continue
+		}
+		found := false
+		for _, s := range item.Snapshots {
+			if s.Name == name {
+				found = true
+				break
+			}
+		}
+		if found {
+			targets = append(targets, state.GuestRecord{
+				Node:     item.Guest.Node,
+				VMID:     item.Guest.VMID,
+				Type:     item.Guest.Type,
+				Snapname: name,
+			})
+		} else {
+			missing = append(missing, item)
+		}
+	}
+	return targets, missing
+}
