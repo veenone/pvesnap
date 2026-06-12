@@ -33,3 +33,22 @@ func TestSelectSnapshotTargets(t *testing.T) {
 		t.Fatalf("filtered targets = %+v", targets)
 	}
 }
+
+func TestAggregateLiveSnapshots(t *testing.T) {
+	inv := []orchestrator.SnapshotInventory{
+		{Snapshots: []proxmox.SnapshotEntry{{Name: "current"}, {Name: "v1", Snaptime: 100}, {Name: "hotfix", Snaptime: 300, Parent: "v1"}}},
+		{Snapshots: []proxmox.SnapshotEntry{{Name: "current"}, {Name: "v1", Snaptime: 150}}},
+	}
+	rows := aggregateLiveSnapshots(inv)
+
+	// "current" is excluded; rows sorted by name: hotfix, v1.
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Name != "hotfix" || rows[0].Count != 1 || !rows[0].Parented {
+		t.Errorf("hotfix row wrong: %+v", rows[0])
+	}
+	if rows[1].Name != "v1" || rows[1].Count != 2 || rows[1].Newest != 150 {
+		t.Errorf("v1 row wrong: %+v", rows[1])
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -358,6 +359,56 @@ func errString(e error) string {
 		return ""
 	}
 	return e.Error()
+}
+
+// liveSnapRow is one row of `snapshot list --live`: a snapshot name and how
+// many guests in the set carry it.
+type liveSnapRow struct {
+	Name     string
+	Count    int   // guests carrying a snapshot of this name
+	Newest   int64 // max snaptime across those guests (unix seconds)
+	Parented bool  // any carrier has a non-empty parent
+}
+
+// aggregateLiveSnapshots collapses per-guest inventories into one row per
+// snapshot name, sorted by name. The synthetic "current" entry is excluded.
+func aggregateLiveSnapshots(inv []orchestrator.SnapshotInventory) []liveSnapRow {
+	type acc struct {
+		count    int
+		newest   int64
+		parented bool
+	}
+	m := map[string]*acc{}
+	for _, item := range inv {
+		for _, s := range item.Snapshots {
+			if s.Name == "current" {
+				continue
+			}
+			a := m[s.Name]
+			if a == nil {
+				a = &acc{}
+				m[s.Name] = a
+			}
+			a.count++
+			if s.Snaptime > a.newest {
+				a.newest = s.Snaptime
+			}
+			if s.Parent != "" {
+				a.parented = true
+			}
+		}
+	}
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	rows := make([]liveSnapRow, 0, len(names))
+	for _, name := range names {
+		a := m[name]
+		rows = append(rows, liveSnapRow{Name: name, Count: a.count, Newest: a.newest, Parented: a.parented})
+	}
+	return rows
 }
 
 // selectSnapshotTargets picks guests whose live inventory contains a snapshot
