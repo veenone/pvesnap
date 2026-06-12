@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/veenone/pvesnap/internal/config"
@@ -50,5 +54,30 @@ func TestAggregateLiveSnapshots(t *testing.T) {
 	}
 	if rows[1].Name != "v1" || rows[1].Count != 2 || rows[1].Newest != 150 {
 		t.Errorf("v1 row wrong: %+v", rows[1])
+	}
+}
+
+func TestRenderResults(t *testing.T) {
+	results := []orchestrator.Result{
+		{Guest: config.Guest{Node: "n", VMID: 1, Type: config.LXC}, Success: true},
+		{Guest: config.Guest{Node: "n", VMID: 2, Type: config.LXC}, Err: errors.New("boom")},
+		{Guest: config.Guest{Node: "n", VMID: 3, Type: config.LXC}, Err: fmt.Errorf("wait: %w", context.Canceled)},
+	}
+	var out bytes.Buffer
+	ok, failed, cancelled := renderResults(&out, results)
+	if ok != 1 || failed != 1 || cancelled != 1 {
+		t.Fatalf("counts: ok=%d failed=%d cancelled=%d", ok, failed, cancelled)
+	}
+	if !strings.Contains(out.String(), "cancelled") {
+		t.Errorf("missing cancelled row:\n%s", out.String())
+	}
+}
+
+func TestExitForCounts(t *testing.T) {
+	cases := []struct{ ok, failed, want int }{{2, 0, 0}, {0, 2, 2}, {1, 1, 1}}
+	for _, c := range cases {
+		if got := exitForCounts(c.ok, c.failed); got != c.want {
+			t.Errorf("exitForCounts(%d,%d)=%d want %d", c.ok, c.failed, got, c.want)
+		}
 	}
 }

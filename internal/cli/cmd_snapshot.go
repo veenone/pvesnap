@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -89,26 +90,19 @@ func runSnapshotCreate(ctx context.Context, cfg *config.Config, st *state.Store,
 		CreatedAt:   time.Now().UTC(),
 		Guests:      make([]state.GuestRecord, len(results)),
 	}
-	okCount, failCount := 0, 0
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NODE\tTYPE\tVMID\tSTATUS\tDETAIL")
 	for i, r := range results {
 		rec := state.GuestRecord{
 			Node: r.Guest.Node, VMID: r.Guest.VMID, Type: r.Guest.Type, Snapname: snapname,
 		}
 		if r.Success {
 			rec.Status = state.StatusOK
-			okCount++
-			fmt.Fprintf(tw, "%s\t%s\t%d\tok\t\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID)
 		} else {
 			rec.Status = state.StatusFailed
 			rec.Error = errString(r.Err)
-			failCount++
-			fmt.Fprintf(tw, "%s\t%s\t%d\tfailed\t%s\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID, rec.Error)
 		}
 		snap.Guests[i] = rec
 	}
-	_ = tw.Flush()
+	okCount, failCount, _ := renderResults(out, results)
 
 	st.Upsert(snap)
 	if err := st.Save(statePath); err != nil {
@@ -116,14 +110,7 @@ func runSnapshotCreate(ctx context.Context, cfg *config.Config, st *state.Store,
 	}
 
 	fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
-	switch {
-	case failCount == 0:
-		return 0
-	case okCount == 0:
-		return 2
-	default:
-		return 1
-	}
+	return exitForCounts(okCount, failCount)
 }
 
 func runSnapshotList(st *state.Store, out io.Writer, args []string) int {
@@ -283,19 +270,7 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 
 	results := orch.Delete(opCtx, targets)
 
-	okCount, failCount := 0, 0
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NODE\tTYPE\tVMID\tSTATUS\tDETAIL")
-	for _, r := range results {
-		if r.Success {
-			okCount++
-			fmt.Fprintf(tw, "%s\t%s\t%d\tok\t\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID)
-		} else {
-			failCount++
-			fmt.Fprintf(tw, "%s\t%s\t%d\tfailed\t%s\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID, errString(r.Err))
-		}
-	}
-	_ = tw.Flush()
+	okCount, failCount, _ := renderResults(out, results)
 
 	if failCount == 0 && vmidFilter == nil {
 		st.Remove(setName, name)
@@ -305,10 +280,39 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 	}
 
 	fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
+	return exitForCounts(okCount, failCount)
+}
+
+// renderResults prints the standard NODE/TYPE/VMID/STATUS/DETAIL table and returns
+// counts. A result whose error is context.Canceled is shown as "cancelled" and counted
+// separately (neither ok nor failed) — it was skipped by cancel-on-first-error, not run.
+func renderResults(out io.Writer, results []orchestrator.Result) (ok, failed, cancelled int) {
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NODE\tTYPE\tVMID\tSTATUS\tDETAIL")
+	for _, r := range results {
+		switch {
+		case r.Success:
+			ok++
+			fmt.Fprintf(tw, "%s\t%s\t%d\tok\t\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID)
+		case errors.Is(r.Err, context.Canceled):
+			cancelled++
+			fmt.Fprintf(tw, "%s\t%s\t%d\tcancelled\t\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID)
+		default:
+			failed++
+			fmt.Fprintf(tw, "%s\t%s\t%d\tfailed\t%s\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID, errString(r.Err))
+		}
+	}
+	_ = tw.Flush()
+	return ok, failed, cancelled
+}
+
+// exitForCounts maps success/failure counts to the pvesnap exit-code contract:
+// 0 all ok, 2 nothing succeeded, 1 partial. Cancelled guests are not counted here.
+func exitForCounts(ok, failed int) int {
 	switch {
-	case failCount == 0:
+	case failed == 0:
 		return 0
-	case okCount == 0:
+	case ok == 0:
 		return 2
 	default:
 		return 1
