@@ -36,7 +36,7 @@ func RunSnapshot(ctx context.Context, cfg *config.Config, statePath string, out 
 	case "create":
 		return runSnapshotCreate(ctx, cfg, st, statePath, out, rest)
 	case "list":
-		return runSnapshotList(st, out, rest)
+		return runSnapshotList(ctx, cfg, st, out, rest)
 	case "restore":
 		return runSnapshotRestore(ctx, cfg, st, statePath, out, rest)
 	case "delete":
@@ -117,12 +117,20 @@ func runSnapshotCreate(ctx context.Context, cfg *config.Config, st *state.Store,
 	return exitForCounts(okCount, failCount, cancelled)
 }
 
-func runSnapshotList(st *state.Store, out io.Writer, args []string) int {
+func runSnapshotList(ctx context.Context, cfg *config.Config, st *state.Store, out io.Writer, args []string) int {
 	fs := flag.NewFlagSet("snapshot list", flag.ContinueOnError)
+	live := fs.Bool("live", false, "query each guest's storage for actual snapshots instead of reading state")
 	if err := fs.Parse(args); err != nil {
 		return 3
 	}
 	pos := fs.Args()
+	if *live {
+		if len(pos) != 1 {
+			fmt.Fprintln(out, "usage: pvesnap snapshot list <set> --live")
+			return 3
+		}
+		return runSnapshotListLive(ctx, cfg, out, pos[0])
+	}
 	filter := ""
 	if len(pos) == 1 {
 		filter = pos[0]
@@ -145,6 +153,48 @@ func runSnapshotList(st *state.Store, out io.Writer, args []string) int {
 	}
 	_ = tw.Flush()
 	return 0
+}
+
+func runSnapshotListLive(ctx context.Context, cfg *config.Config, out io.Writer, setName string) int {
+	set, ok := cfg.FindSet(setName)
+	if !ok {
+		fmt.Fprintf(out, "unknown set: %s\n", setName)
+		return 3
+	}
+	client := proxmox.NewClient(cfg)
+	orch := orchestrator.New(client, cfg)
+	opCtx, cancel := orch.OpContext(ctx)
+	defer cancel()
+
+	inv := orch.DiscoverSnapshots(opCtx, set.Guests)
+	exit := 0
+	for _, item := range inv {
+		if item.Err != nil {
+			fmt.Fprintf(out, "query %s/%d: %v\n", item.Guest.Node, item.Guest.VMID, item.Err)
+			exit = 1
+		}
+	}
+
+	total := len(set.Guests)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tCOVERAGE\tGUESTS\tNEWEST\tPARENTED")
+	for _, r := range aggregateLiveSnapshots(inv) {
+		coverage := "partial"
+		if r.Count == total {
+			coverage = "full"
+		}
+		newest := ""
+		if r.Newest > 0 {
+			newest = time.Unix(r.Newest, 0).Local().Format("2006-01-02 15:04")
+		}
+		parented := "no"
+		if r.Parented {
+			parented = "yes"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%s\t%s\n", r.Name, coverage, r.Count, total, newest, parented)
+	}
+	_ = tw.Flush()
+	return exit
 }
 
 func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store, statePath string, out io.Writer, args []string) int {
