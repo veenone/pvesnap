@@ -209,10 +209,22 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 		fmt.Fprintln(out, "usage: pvesnap snapshot restore <set> <name> [-vmid 100,101]")
 		return 3
 	}
-	setName, name := pos[0], pos[1]
-	snap, _ := st.Find(setName, name)
-	if snap == nil {
-		fmt.Fprintf(out, "no recorded snapshot %s/%s — check 'pvesnap snapshot list'\n", setName, name)
+	setName, rawName := pos[0], pos[1]
+	set, ok := cfg.FindSet(setName)
+	if !ok {
+		fmt.Fprintf(out, "unknown set: %s\n", setName)
+		return 3
+	}
+	snapname, err := config.NormalizeSnapName(rawName)
+	if err != nil {
+		fmt.Fprintln(out, err)
+		return 3
+	}
+	if snapname != rawName {
+		fmt.Fprintf(out, "normalized snapshot name: %s → %s\n", rawName, snapname)
+	}
+	if snapname == "current" {
+		fmt.Fprintln(out, `"current" is the live guest state, not a restorable snapshot`)
 		return 3
 	}
 	vmidFilter, err := parseVMIDFilter(*vmidFlag)
@@ -221,21 +233,40 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 		return 3
 	}
 
-	// Only attempt rollback on guests that have status=ok in state.
-	var targets []state.GuestRecord
-	for _, g := range snap.Guests {
-		if g.Status == state.StatusOK {
-			targets = append(targets, g)
+	client := proxmox.NewClient(cfg)
+	orch := orchestrator.New(client, cfg)
+	opCtx, cancel := orch.OpContext(ctx)
+	defer cancel()
+
+	// Source of truth: what snapshots actually exist on each guest right now.
+	inv := orch.DiscoverSnapshots(opCtx, set.Guests)
+	targets, missing := selectSnapshotTargets(inv, snapname, vmidFilter)
+
+	// Advisory reconciliation against state, plus query-error reporting.
+	for _, m := range missing {
+		if m.Err != nil {
+			fmt.Fprintf(out, "warning: could not query %s/%d: %v\n", m.Guest.Node, m.Guest.VMID, m.Err)
 		}
 	}
-	targets = filterByVMID(targets, vmidFilter)
+	if recorded, _ := st.Find(setName, snapname); recorded != nil {
+		have := map[int]bool{}
+		for _, t := range targets {
+			have[t.VMID] = true
+		}
+		for _, g := range recorded.Guests {
+			if g.Status == state.StatusOK && !have[g.VMID] {
+				fmt.Fprintf(out, "note: state records %d as having %q but it is not on the guest (drift)\n", g.VMID, snapname)
+			}
+		}
+	}
+
 	if len(targets) == 0 {
-		fmt.Fprintln(out, "no healthy guests to roll back in this snapshot")
+		fmt.Fprintf(out, "snapshot %q not found on any guest in set %q\n", snapname, setName)
 		return 2
 	}
 
 	if !*yes {
-		fmt.Fprintf(out, "About to ROLLBACK %d guests in set %q to snapshot %q.\nThis is destructive. Continue? [y/N] ", len(targets), setName, name)
+		fmt.Fprintf(out, "About to ROLLBACK %d guests in set %q to snapshot %q.\nThis is destructive. Continue? [y/N] ", len(targets), setName, snapname)
 		r := bufio.NewReader(os.Stdin)
 		line, _ := r.ReadString('\n')
 		if strings.ToLower(strings.TrimSpace(line)) != "y" {
@@ -243,36 +274,17 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 			return 0
 		}
 	}
-	client := proxmox.NewClient(cfg)
-	orch := orchestrator.New(client, cfg)
-	opCtx, cancel := orch.OpContext(ctx)
-	defer cancel()
 
-	fmt.Fprintf(out, "rolling back %d guests to %q...\n", len(targets), name)
+	fmt.Fprintf(out, "rolling back %d guests to %q...\n", len(targets), snapname)
 	results := orch.Restore(opCtx, targets)
-	okCount, failCount := 0, 0
-	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NODE\tTYPE\tVMID\tSTATUS\tDETAIL")
-	for _, r := range results {
-		if r.Success {
-			okCount++
-			fmt.Fprintf(tw, "%s\t%s\t%d\tok\t\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID)
-		} else {
-			failCount++
-			fmt.Fprintf(tw, "%s\t%s\t%d\tfailed\t%s\n", r.Guest.Node, r.Guest.Type, r.Guest.VMID, errString(r.Err))
-		}
+	okCount, failCount, cancelled := renderResults(out, results)
+	if cancelled > 0 {
+		fmt.Fprintf(out, "done: %d ok, %d failed, %d cancelled\n", okCount, failCount, cancelled)
+	} else {
+		fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
 	}
-	_ = tw.Flush()
-	fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
-	_ = statePath // not modified on restore
-	switch {
-	case failCount == 0:
-		return 0
-	case okCount == 0:
-		return 2
-	default:
-		return 1
-	}
+	_ = statePath // restore does not mutate state
+	return exitForCounts(okCount, failCount, cancelled)
 }
 
 func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store, statePath string, out io.Writer, args []string) int {

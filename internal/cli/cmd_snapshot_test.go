@@ -5,12 +5,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/veenone/pvesnap/internal/config"
 	"github.com/veenone/pvesnap/internal/orchestrator"
 	"github.com/veenone/pvesnap/internal/proxmox"
+	"github.com/veenone/pvesnap/internal/state"
 )
 
 func TestSelectSnapshotTargets(t *testing.T) {
@@ -85,5 +89,40 @@ func TestExitForCounts(t *testing.T) {
 		if got := exitForCounts(c.ok, c.failed, c.cancelled); got != c.want {
 			t.Errorf("exitForCounts(%d,%d,%d)=%d want %d", c.ok, c.failed, c.cancelled, got, c.want)
 		}
+	}
+}
+
+func TestRunSnapshotRestoreLiveSourced(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/lxc/101/snapshot") && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"data":[{"name":"current"},{"name":"v1-5-rc1"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/snapshot/v1-5-rc1/rollback") && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzrollback:101:u@pam!t:"}`))
+		case strings.Contains(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Nodes: []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets: []config.Set{{Name: "e2e-core", Guests: []config.Guest{
+			{Node: "pve1", VMID: 101, Type: config.LXC},
+		}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute},
+	}
+
+	var out bytes.Buffer
+	code := runSnapshotRestore(context.Background(), cfg, &state.Store{}, "ignored.yaml", &out,
+		[]string{"--yes", "e2e-core", "v1-5-rc1"})
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, output:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "1 ok, 0 failed") {
+		t.Errorf("unexpected output:\n%s", out.String())
 	}
 }
