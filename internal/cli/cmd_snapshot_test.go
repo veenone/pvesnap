@@ -74,10 +74,16 @@ func TestRenderResults(t *testing.T) {
 }
 
 func TestExitForCounts(t *testing.T) {
-	cases := []struct{ ok, failed, want int }{{2, 0, 0}, {0, 2, 2}, {1, 1, 1}}
+	cases := []struct{ ok, failed, cancelled, want int }{
+		{2, 0, 0, 0},
+		{0, 2, 0, 2},
+		{1, 1, 0, 1},
+		{0, 0, 3, 2}, // all cancelled -> nothing succeeded
+		{1, 0, 2, 1}, // some ok, some cancelled -> partial
+	}
 	for _, c := range cases {
-		if got := exitForCounts(c.ok, c.failed); got != c.want {
-			t.Errorf("exitForCounts(%d,%d)=%d want %d", c.ok, c.failed, got, c.want)
+		if got := exitForCounts(c.ok, c.failed, c.cancelled); got != c.want {
+			t.Errorf("exitForCounts(%d,%d,%d)=%d want %d", c.ok, c.failed, c.cancelled, got, c.want)
 		}
 	}
 }

@@ -102,15 +102,19 @@ func runSnapshotCreate(ctx context.Context, cfg *config.Config, st *state.Store,
 		}
 		snap.Guests[i] = rec
 	}
-	okCount, failCount, _ := renderResults(out, results)
+	okCount, failCount, cancelled := renderResults(out, results)
 
 	st.Upsert(snap)
 	if err := st.Save(statePath); err != nil {
 		fmt.Fprintf(out, "warning: failed to persist state: %v\n", err)
 	}
 
-	fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
-	return exitForCounts(okCount, failCount)
+	if cancelled > 0 {
+		fmt.Fprintf(out, "done: %d ok, %d failed, %d cancelled\n", okCount, failCount, cancelled)
+	} else {
+		fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
+	}
+	return exitForCounts(okCount, failCount, cancelled)
 }
 
 func runSnapshotList(st *state.Store, out io.Writer, args []string) int {
@@ -270,7 +274,7 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 
 	results := orch.Delete(opCtx, targets)
 
-	okCount, failCount, _ := renderResults(out, results)
+	okCount, failCount, cancelled := renderResults(out, results)
 
 	if failCount == 0 && vmidFilter == nil {
 		st.Remove(setName, name)
@@ -279,8 +283,12 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 		fmt.Fprintf(out, "warning: failed to persist state: %v\n", err)
 	}
 
-	fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
-	return exitForCounts(okCount, failCount)
+	if cancelled > 0 {
+		fmt.Fprintf(out, "done: %d ok, %d failed, %d cancelled\n", okCount, failCount, cancelled)
+	} else {
+		fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
+	}
+	return exitForCounts(okCount, failCount, cancelled)
 }
 
 // renderResults prints the standard NODE/TYPE/VMID/STATUS/DETAIL table and returns
@@ -306,11 +314,13 @@ func renderResults(out io.Writer, results []orchestrator.Result) (ok, failed, ca
 	return ok, failed, cancelled
 }
 
-// exitForCounts maps success/failure counts to the pvesnap exit-code contract:
-// 0 all ok, 2 nothing succeeded, 1 partial. Cancelled guests are not counted here.
-func exitForCounts(ok, failed int) int {
+// exitForCounts maps result counts to the pvesnap exit-code contract:
+// 0 all succeeded, 2 nothing succeeded, 1 partial. Cancelled guests count as
+// not-succeeded (a cancelled operation is not a success).
+func exitForCounts(ok, failed, cancelled int) int {
+	notOK := failed + cancelled
 	switch {
-	case failed == 0:
+	case notOK == 0:
 		return 0
 	case ok == 0:
 		return 2
