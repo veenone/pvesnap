@@ -41,6 +41,11 @@ pvesnap snapshot create <set> <name>         # fresh attempt
 - `snapshot delete` will report the same; the state entry stays because delete didn't fully succeed.
 - To fully clean up, edit `state.yaml` by hand — it's a human-readable file, and you can safely remove the offending `snapshots[]` entry.
 
+As of the live-restore change, `snapshot restore` and `snapshot list --live` query guest
+storage directly, so they tolerate a missing or drifted `state.yaml` — restore targets the
+snapshots that actually exist on each guest. You no longer have to hand-edit `state.yaml`
+to recover from out-of-band snapshot deletion before restoring.
+
 ## Scheduling
 
 Since `pvesnap` is a one-shot CLI, wrap it in systemd or cron.
