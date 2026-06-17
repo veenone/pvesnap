@@ -245,9 +245,11 @@ type BackupTarget struct {
 // RestoreBackup restores each target in-place from its backup volume, under
 // errgroup cancel-on-first-error (a half-restored set is dangerous). Per guest:
 // stop if running -> restore (force) -> wait -> restart only if it was running
-// before and noStart is false (preserves prior power state). As with snapshot
-// restore, an already-issued server-side task continues past a client-side
-// cancel; this bounds, not eliminates, partial restores.
+// before and noStart is false (preserves prior power state). If the stop fails,
+// the restore is aborted for that guest and its power state is left undefined
+// (restoring a still-running guest would be unsafe). As with snapshot restore,
+// an already-issued server-side task continues past a client-side cancel; this
+// bounds, not eliminates, partial restores.
 func (o *Orchestrator) RestoreBackup(ctx context.Context, targets []BackupTarget, noStart bool) []Result {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

@@ -133,3 +133,38 @@ func TestRestoreBackupFailure(t *testing.T) {
 		t.Fatalf("expected failure result, got %+v", res)
 	}
 }
+
+func TestRestoreBackupNoStart(t *testing.T) {
+	var started bool
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/status/current"):
+			_, _ = w.Write([]byte(`{"data":{"status":"running"}}`))
+		case strings.HasSuffix(r.URL.Path, "/status/stop"):
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzstop:101:u:"}`))
+		case strings.HasSuffix(r.URL.Path, "/status/start"):
+			started = true
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzstart:101:u:"}`))
+		case strings.HasSuffix(r.URL.Path, "/lxc") && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzrestore:101:u:"}`))
+		case strings.Contains(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		default:
+			http.Error(w, "bad "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes:    []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute},
+	}
+	orch := New(testClient(cfg), cfg)
+	targets := []BackupTarget{{Guest: config.Guest{Node: "pve1", VMID: 101, Type: config.LXC}, VolID: "v"}}
+	res := orch.RestoreBackup(context.Background(), targets, true) // noStart=true, guest was running
+	if len(res) != 1 || !res[0].Success {
+		t.Fatalf("result: %+v", res)
+	}
+	if started {
+		t.Errorf("--no-start must not restart even a previously-running guest")
+	}
+}
