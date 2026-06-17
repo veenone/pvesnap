@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -158,8 +161,139 @@ func runBackupList(ctx context.Context, cfg *config.Config, out io.Writer, args 
 	return exit
 }
 
-// runBackupRestore is a temporary stub; it will be fully implemented in Task 9.
 func runBackupRestore(ctx context.Context, cfg *config.Config, out io.Writer, args []string) int {
-	fmt.Fprintln(out, "not implemented")
-	return 3
+	// Extract the set name (first positional arg) before flag parsing, because
+	// Go's flag package stops at the first non-flag argument and would leave
+	// subsequent flags unparsed when the set name precedes them.
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(out, "usage: pvesnap backup restore <set> (-vmid N -volid V | --latest | --at T) [-vmid ...] [--no-start] [--yes]")
+		return 3
+	}
+	setName := args[0]
+	flagArgs := args[1:]
+
+	fs := flag.NewFlagSet("backup restore", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "skip confirmation")
+	noStart := fs.Bool("no-start", false, "leave guests stopped after restore (default: restart if it was running)")
+	vmidFlag := fs.String("vmid", "", "comma-separated VMIDs to target")
+	volid := fs.String("volid", "", "exact backup volid (requires a single -vmid)")
+	latest := fs.Bool("latest", false, "restore each guest from its newest backup")
+	atStr := fs.String("at", "", "restore each guest from its newest backup at or before this time (RFC3339 or YYYY-MM-DD)")
+	if err := fs.Parse(flagArgs); err != nil {
+		return 3
+	}
+	if len(fs.Args()) != 0 {
+		fmt.Fprintln(out, "usage: pvesnap backup restore <set> (-vmid N -volid V | --latest | --at T) [-vmid ...] [--no-start] [--yes]")
+		return 3
+	}
+	set, ok := cfg.FindSet(setName)
+	if !ok {
+		fmt.Fprintf(out, "unknown set: %s\n", setName)
+		return 3
+	}
+	storage := cfg.ResolvePBSStorage(set)
+	if storage == "" {
+		fmt.Fprintf(out, "no PBS storage configured for set %q (set defaults.pbs_storage)\n", set.Name)
+		return 3
+	}
+	vmidFilter, err := parseVMIDFilter(*vmidFlag)
+	if err != nil {
+		fmt.Fprintln(out, err)
+		return 3
+	}
+
+	sel := 0
+	if *volid != "" {
+		sel++
+	}
+	if *latest {
+		sel++
+	}
+	if *atStr != "" {
+		sel++
+	}
+	if sel != 1 {
+		fmt.Fprintln(out, "specify exactly one of -volid, --latest, or --at")
+		return 3
+	}
+
+	orch := orchestrator.New(proxmox.NewClient(cfg), cfg)
+	opCtx, cancel := orch.OpContext(ctx)
+	defer cancel()
+
+	var targets []orchestrator.BackupTarget
+	if *volid != "" {
+		if vmidFilter == nil || len(vmidFilter) != 1 {
+			fmt.Fprintln(out, "-volid requires exactly one -vmid")
+			return 3
+		}
+		var vid int
+		for k := range vmidFilter {
+			vid = k
+		}
+		guest, found := config.Guest{}, false
+		for _, g := range set.Guests {
+			if g.VMID == vid {
+				guest, found = g, true
+				break
+			}
+		}
+		if !found {
+			fmt.Fprintf(out, "vmid %d not in set %q\n", vid, set.Name)
+			return 3
+		}
+		targets = []orchestrator.BackupTarget{{Guest: guest, VolID: *volid}}
+	} else {
+		var atUnix int64
+		if *atStr != "" {
+			at, err := parseAtTime(*atStr)
+			if err != nil {
+				fmt.Fprintln(out, err)
+				return 3
+			}
+			atUnix = at.Unix()
+		}
+		results := orch.ListBackups(opCtx, storage, set.Guests)
+		for _, r := range results {
+			if r.Err != nil {
+				fmt.Fprintf(out, "warning: could not list backups for %s/%d: %v\n", r.Guest.Node, r.Guest.VMID, r.Err)
+			}
+		}
+		var skipped []config.Guest
+		targets, skipped = selectBackupTargets(results, *latest, atUnix, vmidFilter)
+		for _, g := range skipped {
+			fmt.Fprintf(out, "note: no matching backup for %s/%d, skipping\n", g.Node, g.VMID)
+		}
+	}
+
+	if len(targets) == 0 {
+		fmt.Fprintf(out, "no backup points selected for set %q\n", set.Name)
+		return 2
+	}
+
+	// Show exactly what will be overwritten before the (destructive) confirm.
+	fmt.Fprintln(out, "will restore (in-place, overwriting disks):")
+	for _, tgt := range targets {
+		fmt.Fprintf(out, "  %s %s %d  <- %s\n", tgt.Guest.Node, tgt.Guest.Type, tgt.Guest.VMID, tgt.VolID)
+	}
+
+	if !*yes {
+		fmt.Fprintf(out, "About to RESTORE %d guests in set %q IN-PLACE from PBS backups.\nThis STOPS each guest and OVERWRITES its disks. Continue? [y/N] ", len(targets), set.Name)
+		r := bufio.NewReader(os.Stdin)
+		line, _ := r.ReadString('\n')
+		if strings.ToLower(strings.TrimSpace(line)) != "y" {
+			fmt.Fprintln(out, "aborted")
+			return 0
+		}
+	}
+
+	fmt.Fprintf(out, "restoring %d guests from PBS...\n", len(targets))
+	results := orch.RestoreBackup(opCtx, targets, *noStart)
+	okCount, failCount, cancelled := renderResults(out, results)
+	if cancelled > 0 {
+		fmt.Fprintf(out, "done: %d ok, %d failed, %d cancelled\n", okCount, failCount, cancelled)
+	} else {
+		fmt.Fprintf(out, "done: %d ok, %d failed\n", okCount, failCount)
+	}
+	return exitForCounts(okCount, failCount, cancelled)
 }

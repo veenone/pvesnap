@@ -108,3 +108,74 @@ func TestRunBackupListNoStorage(t *testing.T) {
 		t.Fatalf("want exit 3 (no pbs_storage), got %d; out=%s", code, out.String())
 	}
 }
+
+func backupRestoreServer() *httptest.Server {
+	return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/content"):
+			_, _ = w.Write([]byte(`{"data":[{"volid":"pbs:backup/ct/101/new","ctime":200},{"volid":"pbs:backup/ct/101/old","ctime":100}]}`))
+		case strings.HasSuffix(r.URL.Path, "/status/current"):
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped"}}`))
+		case strings.HasSuffix(r.URL.Path, "/lxc") && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzrestore:101:u:"}`))
+		case strings.HasSuffix(r.URL.Path, "/status/start"):
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzstart:101:u:"}`))
+		case strings.Contains(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		default:
+			http.Error(w, "bad "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+}
+
+func backupCfg(srv *httptest.Server) *config.Config {
+	return &config.Config{
+		Nodes:    []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets:     []config.Set{{Name: "s", Guests: []config.Guest{{Node: "pve1", VMID: 101, Type: config.LXC}}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute, PBSStorage: "pbs-main"},
+	}
+}
+
+func TestRunBackupRestoreLatest(t *testing.T) {
+	srv := backupRestoreServer()
+	defer srv.Close()
+	var out bytes.Buffer
+	code := RunBackup(context.Background(), backupCfg(srv), &out, []string{"restore", "s", "--latest", "--yes"})
+	if code != 0 {
+		t.Fatalf("want exit 0, got %d; out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "1 ok, 0 failed") {
+		t.Errorf("unexpected: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "will restore") || !strings.Contains(out.String(), "pbs:backup/ct/101/new") {
+		t.Errorf("expected resolved-target preview with newest volid: %s", out.String())
+	}
+}
+
+func TestRunBackupRestorePrecise(t *testing.T) {
+	srv := backupRestoreServer()
+	defer srv.Close()
+	var out bytes.Buffer
+	code := RunBackup(context.Background(), backupCfg(srv), &out,
+		[]string{"restore", "s", "-vmid", "101", "-volid", "pbs:backup/ct/101/old", "--yes"})
+	if code != 0 {
+		t.Fatalf("want exit 0, got %d; out=%s", code, out.String())
+	}
+}
+
+func TestRunBackupRestoreSelectorValidation(t *testing.T) {
+	srv := backupRestoreServer()
+	defer srv.Close()
+	var out bytes.Buffer
+	if code := RunBackup(context.Background(), backupCfg(srv), &out, []string{"restore", "s", "--yes"}); code != 3 {
+		t.Errorf("no selector: want 3, got %d", code)
+	}
+	out.Reset()
+	if code := RunBackup(context.Background(), backupCfg(srv), &out, []string{"restore", "s", "--latest", "--at", "2026-06-11", "--yes"}); code != 3 {
+		t.Errorf("two selectors: want 3, got %d", code)
+	}
+	out.Reset()
+	if code := RunBackup(context.Background(), backupCfg(srv), &out, []string{"restore", "s", "-volid", "x", "--yes"}); code != 3 {
+		t.Errorf("volid without vmid: want 3, got %d", code)
+	}
+}
