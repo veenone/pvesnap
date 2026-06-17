@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/veenone/pvesnap/internal/config"
 )
 
 func TestListBackups(t *testing.T) {
@@ -34,5 +36,38 @@ func TestListBackups(t *testing.T) {
 	}
 	if got[0].VolID == "" || got[0].Protected != 1 || got[0].Verification.State != "ok" || got[0].CTime != 1700000100 {
 		t.Errorf("decode: %+v", got[0])
+	}
+}
+
+func TestRestoreBackup(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/qemu") && r.Method == http.MethodPost:
+			if r.PostForm.Get("archive") == "" || r.PostForm.Get("force") != "1" || r.PostForm.Get("vmid") != "201" {
+				http.Error(w, "bad qemu params", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:qmrestore:201:u:"}`))
+		case strings.HasSuffix(r.URL.Path, "/lxc") && r.Method == http.MethodPost:
+			if r.PostForm.Get("ostemplate") == "" || r.PostForm.Get("restore") != "1" || r.PostForm.Get("force") != "1" {
+				http.Error(w, "bad lxc params", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzrestore:101:u:"}`))
+		default:
+			http.Error(w, "bad "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	cl := newTestClient(srv)
+
+	upid, err := cl.RestoreBackup(context.Background(), "pve1", config.QEMU, 201, "pbs-main:backup/vm/201/x")
+	if err != nil || upid == "" {
+		t.Fatalf("qemu restore: err=%v upid=%q", err, upid)
+	}
+	upid, err = cl.RestoreBackup(context.Background(), "pve1", config.LXC, 101, "pbs-main:backup/ct/101/x")
+	if err != nil || upid == "" {
+		t.Fatalf("lxc restore: err=%v upid=%q", err, upid)
 	}
 }
