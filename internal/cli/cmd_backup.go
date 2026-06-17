@@ -98,24 +98,17 @@ func RunBackup(ctx context.Context, cfg *config.Config, out io.Writer, args []st
 }
 
 func runBackupList(ctx context.Context, cfg *config.Config, out io.Writer, args []string) int {
-	// The set name is positional and comes first; Go's flag package stops
-	// parsing at the first non-flag arg, so extract it before fs.Parse (mirrors
-	// runBackupRestore) — otherwise `backup list <set> -vmid N` would not parse.
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(out, "usage: pvesnap backup list <set> [-vmid 100,101]")
-		return 3
-	}
-	setName := args[0]
-
 	fs := flag.NewFlagSet("backup list", flag.ContinueOnError)
 	vmidFlag := fs.String("vmid", "", "comma-separated VMIDs to list (default: all guests in set)")
-	if err := fs.Parse(args[1:]); err != nil {
+	pos, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
 		return 3
 	}
-	if len(fs.Args()) != 0 {
+	if len(pos) != 1 {
 		fmt.Fprintln(out, "usage: pvesnap backup list <set> [-vmid 100,101]")
 		return 3
 	}
+	setName := pos[0]
 	set, ok := cfg.FindSet(setName)
 	if !ok {
 		fmt.Fprintf(out, "unknown set: %s\n", setName)
@@ -170,16 +163,6 @@ func runBackupList(ctx context.Context, cfg *config.Config, out io.Writer, args 
 }
 
 func runBackupRestore(ctx context.Context, cfg *config.Config, out io.Writer, args []string) int {
-	// Extract the set name (first positional arg) before flag parsing, because
-	// Go's flag package stops at the first non-flag argument and would leave
-	// subsequent flags unparsed when the set name precedes them.
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(out, "usage: pvesnap backup restore <set> (-vmid N -volid V | --latest | --at T) [-vmid ...] [--no-start] [--yes]")
-		return 3
-	}
-	setName := args[0]
-	flagArgs := args[1:]
-
 	fs := flag.NewFlagSet("backup restore", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip confirmation")
 	noStart := fs.Bool("no-start", false, "leave guests stopped after restore (default: restart if it was running)")
@@ -187,13 +170,15 @@ func runBackupRestore(ctx context.Context, cfg *config.Config, out io.Writer, ar
 	volid := fs.String("volid", "", "exact backup volid (requires a single -vmid)")
 	latest := fs.Bool("latest", false, "restore each guest from its newest backup")
 	atStr := fs.String("at", "", "restore each guest from its newest backup at or before this time (RFC3339 or YYYY-MM-DD)")
-	if err := fs.Parse(flagArgs); err != nil {
+	pos, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
 		return 3
 	}
-	if len(fs.Args()) != 0 {
+	if len(pos) != 1 {
 		fmt.Fprintln(out, "usage: pvesnap backup restore <set> (-vmid N -volid V | --latest | --at T) [-vmid ...] [--no-start] [--yes]")
 		return 3
 	}
+	setName := pos[0]
 	set, ok := cfg.FindSet(setName)
 	if !ok {
 		fmt.Fprintf(out, "unknown set: %s\n", setName)
