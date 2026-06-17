@@ -96,6 +96,19 @@ On a typical homelab node (SSD + ZFS), per-guest snapshot creation takes:
 
 With `parallelism_per_node: 2`, a set of 20 guests spread across 4 nodes (5 each) captures in ~10 seconds when nothing is pathological. The 30-minute `task_timeout` in the default config is loosely sized for the RAM-snapshot worst case.
 
+## PBS backups (`backup` commands)
+
+`backup list`/`backup restore` require a PBS datastore registered as a PVE storage; set
+its storage id in `defaults.pbs_storage` (or per set). pvesnap reaches it through the node
+API with the existing tokens — no separate PBS credentials. Backups are created and pruned
+by PBS, not pvesnap.
+
+`backup restore` is **in-place and destructive**: it stops the guest and overwrites its
+disks, then restarts only guests that were running before (use `--no-start` to leave them
+stopped). Like `snapshot restore`, set-wide restore uses cancel-on-first-error; an
+already-issued server-side restore continues past a client cancel, so a half-restored set
+is bounded, not impossible.
+
 ## Security notes
 
 The API token in `config.yaml` is a secret. A few practical rules:

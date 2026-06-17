@@ -21,3 +21,4 @@ defaults:
   parallelism_per_node: 2
   task_poll_interval: 2s
   task_timeout: 30m
+  pbs_storage: pbs-main      # PBS datastore registered on the nodes (for `backup` commands)

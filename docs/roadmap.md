@@ -13,7 +13,7 @@ This document plans the work that was explicitly listed as **out of scope** for 
 | 5 | GitHub Actions CI + releases | S | High (hygiene) | Planned |
 | 6 | Unit tests for `proxmox` and `orchestrator` | M | High (hygiene) | Planned |
 | 7 | TUI mode | M | Medium | Deferred |
-| 8 | vzdump / PBS long-term archive | L | Situational | Deferred |
+| 8 | vzdump / PBS long-term archive | L | Situational | Consume (list/restore) landed |
 | 9 | Multi-cluster tenancy (profiles) | S | Low | Docs-only |
 | 10 | Snapshot chain inspection | S | Low | Covered by #2 |
 
@@ -192,6 +192,10 @@ Restore is the hard part: a vzdump restore targets a vmid (possibly a new one), 
 - `internal/backup/` — new orchestrator / state model.
 
 **Effort:** 1–2 weeks. Deferred: do it only when snapshot workflows are solid and someone is actually hitting the "guest destroyed, state lost" pain.
+
+> **Update (2026-06-17):** The consume half shipped as integrated `backup list`/`backup
+> restore` (PBS via the node storage API, in-place restore). Backup *creation* (vzdump) and
+> retention remain out of scope — PBS owns them.
 
 ## 9. Multi-cluster tenancy (profiles)
 
