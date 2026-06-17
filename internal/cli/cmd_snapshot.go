@@ -424,6 +424,9 @@ func parseVMIDFilter(raw string) (map[int]bool, error) {
 // arguments to appear in any order. Go's flag package otherwise stops parsing at
 // the first positional, which silently drops flags written after positionals
 // (e.g. `restore <set> <name> --yes`). Returns the positionals in order.
+// A "--" terminator stops flag scanning, so any flag-like tokens after it are
+// returned as literal positionals (the arity checks then reject them) — fine
+// here because set/snapshot names never start with "-".
 func parseFlagsAndPositionals(fs *flag.FlagSet, args []string) ([]string, error) {
 	var positionals []string
 	rest := args
@@ -431,6 +434,8 @@ func parseFlagsAndPositionals(fs *flag.FlagSet, args []string) ([]string, error)
 		if err := fs.Parse(rest); err != nil {
 			return nil, err
 		}
+		// fs.Args() is the suffix from the first non-flag token, so each
+		// iteration consumes rest[0]; rest strictly shrinks until empty.
 		rest = fs.Args()
 		if len(rest) == 0 {
 			break
