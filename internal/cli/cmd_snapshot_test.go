@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -249,5 +251,64 @@ func TestRunSnapshotListLive(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "v1") || !strings.Contains(out.String(), "partial") {
 		t.Errorf("expected v1 partial row: %s", out.String())
+	}
+}
+
+func TestParseFlagsAndPositionals(t *testing.T) {
+	mk := func() (*flag.FlagSet, *bool, *string) {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		yes := fs.Bool("yes", false, "")
+		vmid := fs.String("vmid", "", "")
+		return fs, yes, vmid
+	}
+	fs, yes, vmid := mk()
+	pos, err := parseFlagsAndPositionals(fs, []string{"set", "name", "--yes", "-vmid", "1"})
+	if err != nil || len(pos) != 2 || pos[0] != "set" || pos[1] != "name" || !*yes || *vmid != "1" {
+		t.Fatalf("after: pos=%v yes=%v vmid=%q err=%v", pos, *yes, *vmid, err)
+	}
+	fs, yes, _ = mk()
+	pos, _ = parseFlagsAndPositionals(fs, []string{"--yes", "set", "name"})
+	if len(pos) != 2 || !*yes {
+		t.Fatalf("before: pos=%v yes=%v", pos, *yes)
+	}
+	fs, yes, _ = mk()
+	pos, _ = parseFlagsAndPositionals(fs, []string{"set", "--yes", "name"})
+	if len(pos) != 2 || pos[0] != "set" || pos[1] != "name" || !*yes {
+		t.Fatalf("interspersed: pos=%v yes=%v", pos, *yes)
+	}
+	fs, _, _ = mk()
+	if _, err := parseFlagsAndPositionals(fs, []string{"--nope"}); err == nil {
+		t.Errorf("expected error for unknown flag")
+	}
+}
+
+func TestRunSnapshotRestoreTrailingYes(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/lxc/101/snapshot") && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"data":[{"name":"current"},{"name":"v1-5-rc1"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/snapshot/v1-5-rc1/rollback") && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:0:0:0:vzrollback:101:u:"}`))
+		case strings.Contains(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, _ = w.Write([]byte(`{"data":{"status":"stopped","exitstatus":"OK"}}`))
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes: []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets:  []config.Set{{Name: "e2e-core", Guests: []config.Guest{{Node: "pve1", VMID: 101, Type: config.LXC}}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute},
+	}
+	var out bytes.Buffer
+	// flag AFTER positionals must be honored (no interactive prompt, exit 0).
+	code := runSnapshotRestore(context.Background(), cfg, &state.Store{}, "x", &out, []string{"e2e-core", "v1-5-rc1", "--yes"})
+	if code != 0 {
+		t.Fatalf("trailing --yes should be parsed; exit=%d out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "1 ok, 0 failed") {
+		t.Errorf("unexpected: %s", out.String())
 	}
 }

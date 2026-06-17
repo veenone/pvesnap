@@ -51,10 +51,10 @@ func runSnapshotCreate(ctx context.Context, cfg *config.Config, st *state.Store,
 	fs := flag.NewFlagSet("snapshot create", flag.ContinueOnError)
 	desc := fs.String("description", "", "snapshot description recorded on every guest")
 	includeRAM := fs.Bool("include-ram", false, "include VM RAM state (vmstate=1); VMs only, larger snapshots")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
 		return 3
 	}
-	pos := fs.Args()
 	if len(pos) != 2 {
 		fmt.Fprintln(out, "usage: pvesnap snapshot create <set> <name>")
 		return 3
@@ -120,10 +120,10 @@ func runSnapshotCreate(ctx context.Context, cfg *config.Config, st *state.Store,
 func runSnapshotList(ctx context.Context, cfg *config.Config, st *state.Store, out io.Writer, args []string) int {
 	fs := flag.NewFlagSet("snapshot list", flag.ContinueOnError)
 	live := fs.Bool("live", false, "query each guest's storage for actual snapshots instead of reading state")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
 		return 3
 	}
-	pos := fs.Args()
 	if *live {
 		if len(pos) != 1 {
 			fmt.Fprintln(out, "usage: pvesnap snapshot list <set> --live")
@@ -201,10 +201,10 @@ func runSnapshotRestore(ctx context.Context, cfg *config.Config, st *state.Store
 	fs := flag.NewFlagSet("snapshot restore", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip confirmation")
 	vmidFlag := fs.String("vmid", "", "comma-separated VMIDs to restore (default: all guests in set)")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
 		return 3
 	}
-	pos := fs.Args()
 	if len(pos) != 2 {
 		fmt.Fprintln(out, "usage: pvesnap snapshot restore <set> <name> [-vmid 100,101]")
 		return 3
@@ -296,10 +296,10 @@ func runSnapshotDelete(ctx context.Context, cfg *config.Config, st *state.Store,
 	fs := flag.NewFlagSet("snapshot delete", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "skip confirmation")
 	vmidFlag := fs.String("vmid", "", "comma-separated VMIDs to delete (default: all guests in set)")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseFlagsAndPositionals(fs, args)
+	if err != nil {
 		return 3
 	}
-	pos := fs.Args()
 	if len(pos) != 2 {
 		fmt.Fprintln(out, "usage: pvesnap snapshot delete <set> <name> [-vmid 100,101]")
 		return 3
@@ -418,6 +418,27 @@ func parseVMIDFilter(raw string) (map[int]bool, error) {
 		return nil, nil
 	}
 	return m, nil
+}
+
+// parseFlagsAndPositionals parses fs from args, allowing flags and positional
+// arguments to appear in any order. Go's flag package otherwise stops parsing at
+// the first positional, which silently drops flags written after positionals
+// (e.g. `restore <set> <name> --yes`). Returns the positionals in order.
+func parseFlagsAndPositionals(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positionals []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return nil, err
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positionals = append(positionals, rest[0])
+		rest = rest[1:]
+	}
+	return positionals, nil
 }
 
 // filterByVMID returns only guests whose VMID is in the filter map.
