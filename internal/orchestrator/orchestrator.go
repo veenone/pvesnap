@@ -56,6 +56,44 @@ type Result struct {
 	Err     error
 }
 
+// SnapshotInventory is the set of snapshots present on one guest's storage.
+type SnapshotInventory struct {
+	Guest     config.Guest
+	Snapshots []proxmox.SnapshotEntry
+	Err       error
+}
+
+// DiscoverSnapshots queries each guest's live snapshot list concurrently,
+// gated by the per-node semaphore. A per-guest query error is captured in that
+// entry's Err; the fan-out always returns exactly one entry per input guest.
+func (o *Orchestrator) DiscoverSnapshots(ctx context.Context, guests []config.Guest) []SnapshotInventory {
+	results := make([]SnapshotInventory, len(guests))
+	var wg sync.WaitGroup
+	for i, g := range guests {
+		wg.Add(1)
+		go func(i int, g config.Guest) {
+			defer wg.Done()
+			inv := SnapshotInventory{Guest: g}
+			if err := o.acquire(ctx, g.Node); err != nil {
+				inv.Err = err
+				results[i] = inv
+				return
+			}
+			defer o.release(g.Node)
+			snaps, err := o.Client.ListSnapshots(ctx, g.Node, g.Type, g.VMID)
+			if err != nil {
+				inv.Err = fmt.Errorf("list snapshots: %w", err)
+				results[i] = inv
+				return
+			}
+			inv.Snapshots = snaps
+			results[i] = inv
+		}(i, g)
+	}
+	wg.Wait()
+	return results
+}
+
 // Create fans out snapshot creation across the set. It runs every guest even
 // if some fail — partial snapshots are recoverable. Returns per-guest results.
 func (o *Orchestrator) Create(ctx context.Context, set config.Set, snapname, description string, vmstate bool) []Result {

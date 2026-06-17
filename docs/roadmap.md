@@ -6,7 +6,7 @@ This document plans the work that was explicitly listed as **out of scope** for 
 
 | # | Item | Effort | Value | Status |
 |---|---|---|---|---|
-| 1 | Snapshot sync / reconcile | S | High | Planned |
+| 1 | Snapshot sync / reconcile | S | High | Restore-side landed (live restore) |
 | 2 | Snapshot tree visualization | S | Medium | Planned |
 | 3 | Dry-run + JSON output | S | Medium | Planned |
 | 4 | Retention (`--retain`, `prune`) | M | High | Planned |
@@ -38,6 +38,11 @@ Effort: S = ≤ 1 day, M = 2–5 days, L = > 1 week. "Deferred" means useful but
 - `internal/orchestrator/orchestrator.go` — add `Sync(ctx, records) []Result` using the existing semaphore.
 
 **Effort:** ~200 LoC, half a day. Low risk because it only reads from Proxmox.
+
+> **Update (2026-06-12):** The restore path no longer depends on `state.yaml` — `snapshot
+> restore` and `snapshot list --live` source snapshots live from each guest. A dedicated
+> `snapshot sync` command (to rewrite state `status` fields) is still unbuilt, but the
+> drift-recovery motivation is largely addressed for restore.
 
 ## 2. Snapshot tree visualization
 

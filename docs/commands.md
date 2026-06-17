@@ -88,6 +88,22 @@ e2e-core  v1-5-rc1  2026-04-18 09:15  4       0       v1.5 RC1
 
 The `FAILED` column is the count of guests whose state entry is not `ok` — i.e. guests where this snapshot does **not** exist or is incomplete.
 
+### Live listing with `--live`
+
+`pvesnap snapshot list <set> --live` queries each guest in the set directly and
+aggregates the snapshots that actually exist on their storage (independent of
+`state.yaml`). Useful before a restore, and for spotting drift.
+
+```
+$ pvesnap snapshot list e2e-core --live
+NAME      COVERAGE  GUESTS  NEWEST            PARENTED
+v1-5-rc1  full      4/4     2026-06-11 09:15  yes
+hotfix    partial   2/4     2026-06-11 14:02  no
+```
+
+- `COVERAGE` is `full` when every guest in the set carries that snapshot name, else `partial`.
+- A per-guest query failure prints a warning line and yields exit code 1.
+
 ## `pvesnap snapshot restore <set> <name>`
 
 Rolls every guest in the set back to the recorded snapshot. Interactive confirmation unless `--yes` is passed. Uses `errgroup` with cancel-on-first-error: if any one guest's rollback fails, remaining rollbacks are cancelled to avoid a half-restored environment.
@@ -103,7 +119,12 @@ pve2  lxc   202   ok
 done: 4 ok, 0 failed
 ```
 
-Only guests whose state status is `ok` are attempted — guests that failed at create time are skipped.
+Restore is **live-sourced**: the set is read from config, and each guest is queried for
+the named snapshot directly on its storage. Only guests that actually hold the snapshot
+are rolled back. This works even when `state.yaml` is missing or out of date; the snapshot
+name is normalized the same way as on create. If state records a guest as holding the
+snapshot but it is absent on the guest, a drift note is printed and that guest is skipped.
+If the name is found on no guest, the command prints a message and exits 2.
 
 ### Selective restore with `--vmid`
 
