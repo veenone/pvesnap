@@ -98,19 +98,27 @@ func RunBackup(ctx context.Context, cfg *config.Config, out io.Writer, args []st
 }
 
 func runBackupList(ctx context.Context, cfg *config.Config, out io.Writer, args []string) int {
-	fs := flag.NewFlagSet("backup list", flag.ContinueOnError)
-	vmidFlag := fs.String("vmid", "", "comma-separated VMIDs to list (default: all guests in set)")
-	if err := fs.Parse(args); err != nil {
-		return 3
-	}
-	pos := fs.Args()
-	if len(pos) != 1 {
+	// The set name is positional and comes first; Go's flag package stops
+	// parsing at the first non-flag arg, so extract it before fs.Parse (mirrors
+	// runBackupRestore) — otherwise `backup list <set> -vmid N` would not parse.
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fmt.Fprintln(out, "usage: pvesnap backup list <set> [-vmid 100,101]")
 		return 3
 	}
-	set, ok := cfg.FindSet(pos[0])
+	setName := args[0]
+
+	fs := flag.NewFlagSet("backup list", flag.ContinueOnError)
+	vmidFlag := fs.String("vmid", "", "comma-separated VMIDs to list (default: all guests in set)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 3
+	}
+	if len(fs.Args()) != 0 {
+		fmt.Fprintln(out, "usage: pvesnap backup list <set> [-vmid 100,101]")
+		return 3
+	}
+	set, ok := cfg.FindSet(setName)
 	if !ok {
-		fmt.Fprintf(out, "unknown set: %s\n", pos[0])
+		fmt.Fprintf(out, "unknown set: %s\n", setName)
 		return 3
 	}
 	storage := cfg.ResolvePBSStorage(set)

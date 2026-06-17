@@ -109,6 +109,31 @@ func TestRunBackupListNoStorage(t *testing.T) {
 	}
 }
 
+func TestRunBackupListVmidFilter(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("vmid") == "101" {
+			_, _ = w.Write([]byte(`{"data":[{"volid":"pbs-main:backup/ct/101/x","format":"pbs-ct","ctime":1700000100,"size":1024,"verification":{"state":"ok"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes:    []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets:     []config.Set{{Name: "s", Guests: []config.Guest{{Node: "pve1", VMID: 101, Type: config.LXC}, {Node: "pve1", VMID: 102, Type: config.LXC}}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute, PBSStorage: "pbs-main"},
+	}
+	var out bytes.Buffer
+	// -vmid AFTER the set name must parse (regression guard for flag ordering).
+	code := RunBackup(context.Background(), cfg, &out, []string{"list", "s", "-vmid", "101"})
+	if code != 0 {
+		t.Fatalf("want exit 0 (filtered to 101), got %d; out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "pbs-main:backup/ct/101/x") {
+		t.Errorf("expected 101's backup row: %s", out.String())
+	}
+}
+
 func backupRestoreServer() *httptest.Server {
 	return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
