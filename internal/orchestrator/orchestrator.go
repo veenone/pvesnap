@@ -200,6 +200,42 @@ func (o *Orchestrator) Delete(ctx context.Context, records []state.GuestRecord) 
 	return results
 }
 
+// BackupListResult is the PBS backup points present for one guest.
+type BackupListResult struct {
+	Guest   config.Guest
+	Backups []proxmox.BackupPoint
+	Err     error
+}
+
+// ListBackups queries each guest's PBS backup points concurrently, gated by the
+// per-node semaphore. Continues on per-guest error (captured in Err).
+func (o *Orchestrator) ListBackups(ctx context.Context, storage string, guests []config.Guest) []BackupListResult {
+	results := make([]BackupListResult, len(guests))
+	var wg sync.WaitGroup
+	for i, g := range guests {
+		wg.Add(1)
+		go func(i int, g config.Guest) {
+			defer wg.Done()
+			res := BackupListResult{Guest: g}
+			if err := o.acquire(ctx, g.Node); err != nil {
+				res.Err = err
+				results[i] = res
+				return
+			}
+			defer o.release(g.Node)
+			b, err := o.Client.ListBackups(ctx, g.Node, storage, g.VMID)
+			if err != nil {
+				res.Err = fmt.Errorf("list backups: %w", err)
+			} else {
+				res.Backups = b
+			}
+			results[i] = res
+		}(i, g)
+	}
+	wg.Wait()
+	return results
+}
+
 // OpContext returns a context bounded by the configured task timeout.
 func (o *Orchestrator) OpContext(parent context.Context) (context.Context, context.CancelFunc) {
 	d := o.Cfg.Defaults.TaskTimeout
