@@ -1,7 +1,13 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/veenone/pvesnap/internal/config"
 	"github.com/veenone/pvesnap/internal/orchestrator"
@@ -66,3 +72,39 @@ func errAny() error { return &simpleErr{"boom"} }
 type simpleErr struct{ s string }
 
 func (e *simpleErr) Error() string { return e.s }
+
+func TestRunBackupList(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/content") && r.URL.Query().Get("vmid") == "101":
+			_, _ = w.Write([]byte(`{"data":[{"volid":"pbs-main:backup/ct/101/x","format":"pbs-ct","ctime":1700000100,"size":1288490188,"verification":{"state":"ok"}}]}`))
+		default:
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	cfg := &config.Config{
+		Nodes:    []config.Node{{Name: "pve1", Endpoint: srv.URL, APIToken: "u@pam!t=x", VerifyTLS: false}},
+		Sets:     []config.Set{{Name: "s", Guests: []config.Guest{{Node: "pve1", VMID: 101, Type: config.LXC}, {Node: "pve1", VMID: 102, Type: config.LXC}}}},
+		Defaults: config.Defaults{ParallelismPerNode: 2, TaskPollInterval: time.Millisecond, TaskTimeout: time.Minute, PBSStorage: "pbs-main"},
+	}
+	var out bytes.Buffer
+	code := RunBackup(context.Background(), cfg, &out, []string{"list", "s"})
+	if code != 1 {
+		t.Fatalf("want exit 1, got %d; out=%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "1.2 GiB") || !strings.Contains(out.String(), "pbs-main:backup/ct/101/x") {
+		t.Errorf("missing backup row: %s", out.String())
+	}
+}
+
+func TestRunBackupListNoStorage(t *testing.T) {
+	cfg := &config.Config{
+		Nodes: []config.Node{{Name: "pve1", Endpoint: "https://x", APIToken: "t", VerifyTLS: false}},
+		Sets:  []config.Set{{Name: "s", Guests: []config.Guest{{Node: "pve1", VMID: 101, Type: config.LXC}}}},
+	}
+	var out bytes.Buffer
+	if code := RunBackup(context.Background(), cfg, &out, []string{"list", "s"}); code != 3 {
+		t.Fatalf("want exit 3 (no pbs_storage), got %d; out=%s", code, out.String())
+	}
+}
