@@ -24,6 +24,11 @@ There is no login or CSRF-token dance — tokens are stateless. Requests that fa
 | `DELETE` | `/api2/json/nodes/{node}/qemu/{vmid}/snapshot/{snap}` | Delete a QEMU snapshot. |
 | `DELETE` | `/api2/json/nodes/{node}/lxc/{vmid}/snapshot/{snap}` | Delete an LXC snapshot. |
 | `GET` | `/api2/json/nodes/{node}/tasks/{upid}/status` | Poll the status of an async task. |
+| `GET` | `/api2/json/nodes/{node}/storage/{storage}/content?content=backup&vmid={vmid}` | List PBS backup volumes for a guest. |
+| `POST` | `/api2/json/nodes/{node}/qemu` (`archive`, `force=1`) | Restore a VM in-place from a backup. Returns a UPID. |
+| `POST` | `/api2/json/nodes/{node}/lxc` (`ostemplate`, `restore=1`, `force=1`) | Restore a container in-place. Returns a UPID. |
+| `GET` | `/api2/json/nodes/{node}/{type}/{vmid}/status/current` | Guest run state. |
+| `POST` | `/api2/json/nodes/{node}/{type}/{vmid}/status/{stop,start}` | Stop/start a guest. Returns a UPID. |
 
 All `POST`/`DELETE` endpoints above return a **UPID** immediately — not the result of the operation. That string identifies an async task you must poll separately.
 

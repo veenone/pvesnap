@@ -170,6 +170,37 @@ done: 4 ok, 0 failed
 | `--yes` | Skip the interactive confirmation prompt. |
 | `--vmid <id,...>` | Comma-separated list of VMIDs to target. When omitted, all guests in the set are affected. |
 
+## `pvesnap backup list <set> [-vmid 100,101]`
+
+Lists PBS backup points for each guest in the set, newest first. Read-only; queries the
+node storage content API for `defaults.pbs_storage` (or the set's `pbs_storage` override).
+
+```
+$ pvesnap backup list e2e-core
+NODE  TYPE  VMID  WHEN              SIZE     VERIFIED  PROT  VOLID
+pve1  lxc   101   2026-06-11 02:14  1.2 GiB  ok        no    pbs-main:backup/ct/101/2026-06-11T02:14:03Z
+```
+
+A per-guest query failure prints a line and yields exit code 1.
+
+## `pvesnap backup restore <set> ...`
+
+Restores guests **in-place** (stop if running → restore over the same VMID with `force=1`
+→ restart only if it was running before) from PBS backups. Destructive; prints the
+resolved targets and prompts unless `--yes`. PBS backups are per-guest, so:
+
+- **Precise:** `backup restore <set> -vmid 101 -volid <volid>` — one guest from one backup.
+- **Set-wide:** `backup restore <set> --latest` or `--at 2026-06-11` — each targeted guest's
+  newest backup (or newest at/before the time). Exactly one of `-volid`, `--latest`, `--at`.
+
+| Flag | Purpose |
+|---|---|
+| `--yes` | Skip confirmation. |
+| `--no-start` | Leave guests stopped after restore (default: restart guests that were running). |
+| `-vmid <id,...>` | Restrict to these VMIDs. Required (single) with `-volid`. |
+| `-volid <volid>` | Exact backup volume (precise mode). |
+| `--latest` / `--at <T>` | Set-wide selectors. `T` is RFC3339 or `YYYY-MM-DD`. |
+
 ## Exit codes
 
 | Code | Meaning |

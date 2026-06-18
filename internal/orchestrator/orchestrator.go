@@ -200,6 +200,121 @@ func (o *Orchestrator) Delete(ctx context.Context, records []state.GuestRecord) 
 	return results
 }
 
+// BackupListResult is the PBS backup points present for one guest.
+type BackupListResult struct {
+	Guest   config.Guest
+	Backups []proxmox.BackupPoint
+	Err     error
+}
+
+// ListBackups queries each guest's PBS backup points concurrently, gated by the
+// per-node semaphore. Continues on per-guest error (captured in Err).
+func (o *Orchestrator) ListBackups(ctx context.Context, storage string, guests []config.Guest) []BackupListResult {
+	results := make([]BackupListResult, len(guests))
+	var wg sync.WaitGroup
+	for i, g := range guests {
+		wg.Add(1)
+		go func(i int, g config.Guest) {
+			defer wg.Done()
+			res := BackupListResult{Guest: g}
+			if err := o.acquire(ctx, g.Node); err != nil {
+				res.Err = err
+				results[i] = res
+				return
+			}
+			defer o.release(g.Node)
+			b, err := o.Client.ListBackups(ctx, g.Node, storage, g.VMID)
+			if err != nil {
+				res.Err = fmt.Errorf("list backups: %w", err)
+			} else {
+				res.Backups = b
+			}
+			results[i] = res
+		}(i, g)
+	}
+	wg.Wait()
+	return results
+}
+
+// BackupTarget is one guest to restore from a specific backup volume.
+type BackupTarget struct {
+	Guest config.Guest
+	VolID string
+}
+
+// RestoreBackup restores each target in-place from its backup volume, under
+// errgroup cancel-on-first-error (a half-restored set is dangerous). Per guest:
+// stop if running -> restore (force) -> wait -> restart only if it was running
+// before and noStart is false (preserves prior power state). If the stop fails,
+// the restore is aborted for that guest and its power state is left undefined
+// (restoring a still-running guest would be unsafe). As with snapshot restore,
+// an already-issued server-side task continues past a client-side cancel; this
+// bounds, not eliminates, partial restores.
+func (o *Orchestrator) RestoreBackup(ctx context.Context, targets []BackupTarget, noStart bool) []Result {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]Result, len(targets))
+	g, gctx := errgroup.WithContext(ctx)
+	for i, tgt := range targets {
+		i, tgt := i, tgt
+		results[i] = Result{Guest: tgt.Guest}
+		g.Go(func() error {
+			if err := o.acquire(gctx, tgt.Guest.Node); err != nil {
+				results[i].Err = err
+				return err
+			}
+			defer o.release(tgt.Guest.Node)
+			node, gt, vmid := tgt.Guest.Node, tgt.Guest.Type, tgt.Guest.VMID
+
+			status, err := o.Client.GuestStatus(gctx, node, gt, vmid)
+			if err != nil {
+				results[i].Err = fmt.Errorf("status: %w", err)
+				return results[i].Err
+			}
+			wasRunning := status == "running"
+			if wasRunning {
+				upid, err := o.Client.StopGuest(gctx, node, gt, vmid)
+				if err != nil {
+					results[i].Err = fmt.Errorf("stop: %w", err)
+					return results[i].Err
+				}
+				if err := o.Client.WaitTask(gctx, node, upid, o.Cfg.Defaults.TaskPollInterval); err != nil {
+					results[i].Err = fmt.Errorf("stop wait: %w", err)
+					return results[i].Err
+				}
+			}
+
+			upid, err := o.Client.RestoreBackup(gctx, node, gt, vmid, tgt.VolID)
+			if err != nil {
+				results[i].Err = fmt.Errorf("restore: %w", err)
+				return results[i].Err
+			}
+			if err := o.Client.WaitTask(gctx, node, upid, o.Cfg.Defaults.TaskPollInterval); err != nil {
+				results[i].Err = fmt.Errorf("restore wait: %w", err)
+				return results[i].Err
+			}
+
+			// Restore the guest's prior power state: restart only if it was
+			// running before, unless the caller forced --no-start.
+			if wasRunning && !noStart {
+				upid, err := o.Client.StartGuest(gctx, node, gt, vmid)
+				if err != nil {
+					results[i].Err = fmt.Errorf("start: %w", err)
+					return results[i].Err
+				}
+				if err := o.Client.WaitTask(gctx, node, upid, o.Cfg.Defaults.TaskPollInterval); err != nil {
+					results[i].Err = fmt.Errorf("start wait: %w", err)
+					return results[i].Err
+				}
+			}
+			results[i].Success = true
+			return nil
+		})
+	}
+	_ = g.Wait()
+	return results
+}
+
 // OpContext returns a context bounded by the configured task timeout.
 func (o *Orchestrator) OpContext(parent context.Context) (context.Context, context.CancelFunc) {
 	d := o.Cfg.Defaults.TaskTimeout

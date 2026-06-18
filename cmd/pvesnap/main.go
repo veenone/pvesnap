@@ -29,6 +29,8 @@ Commands:
   snapshot list [<set>] [--live]        list recorded snapshots (--live: query guest storage)
   snapshot restore <set> <name>         roll back a set to a recorded snapshot
   snapshot delete <set> <name>          delete a recorded snapshot
+  backup list <set> [-vmid ...]         list PBS backup points for a set
+  backup restore <set> ...              restore guests in-place from PBS backups
 
 Exit codes:
   0 success  1 partial failure  2 full failure  3 usage/config error
@@ -75,6 +77,8 @@ func run() int {
 		return cli.RunSet(ctx, cfg, os.Stdout, args[1:])
 	case "snapshot":
 		return cli.RunSnapshot(ctx, cfg, *statePath, os.Stdout, args[1:])
+	case "backup":
+		return cli.RunBackup(ctx, cfg, os.Stdout, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
 		fs.Usage()

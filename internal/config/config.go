@@ -35,12 +35,14 @@ type Set struct {
 	Name        string  `yaml:"name"`
 	Description string  `yaml:"description,omitempty"`
 	Guests      []Guest `yaml:"guests"`
+	PBSStorage  string  `yaml:"pbs_storage,omitempty"`
 }
 
 type Defaults struct {
 	ParallelismPerNode int           `yaml:"parallelism_per_node"`
 	TaskPollInterval  time.Duration `yaml:"task_poll_interval"`
 	TaskTimeout       time.Duration `yaml:"task_timeout"`
+	PBSStorage        string        `yaml:"pbs_storage"`
 }
 
 type Config struct {
@@ -135,6 +137,15 @@ func (c *Config) FindNode(name string) (Node, bool) {
 		}
 	}
 	return Node{}, false
+}
+
+// ResolvePBSStorage returns the PBS storage id for a set: the set's override if
+// set, otherwise the global default. Empty string means "not configured".
+func (c *Config) ResolvePBSStorage(s Set) string {
+	if s.PBSStorage != "" {
+		return s.PBSStorage
+	}
+	return c.Defaults.PBSStorage
 }
 
 func (c *Config) FindSet(name string) (Set, bool) {
